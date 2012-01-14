@@ -27,6 +27,7 @@ Copyright 2012 Kasper Skårhøj, SKAARHOJ, kasperskaarhoj@gmail.com
  * Uses digital inputs 2 and 3 (active High) to select input 1 and 2 on Preview Bus
  * Uses digital input 7 (active High) to "Cut" (Preview and Program swaps)
  * Uses digital outputs 4 and 5 for Tally LEDs for input 1 and 2 (Active LOW)
+ * See file "Breadboard circuit for ATEM basic control.pdf" for suggested breadboard schematics (find it under ATEM/examples/ATEMbasicControl/ in this library)
  */
 /*****************
  * TO MAKE THIS EXAMPLE WORK:
