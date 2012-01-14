@@ -33,6 +33,8 @@ ATEM::ATEM(IPAddress ip, uint16_t localPort){
 	
 	_switcherIP = ip;	// Set switcher IP address
 	_localPort = localPort;	// Set local port (just a random number I picked)
+	
+	_serialOutput = false;
 }
 
 void ATEM::connect() {
@@ -111,8 +113,9 @@ void ATEM::runLoop() {
     boolean command_ACK = command & B00001000 ? true : false;	// If true, ATEM expects an acknowledgement answer back!
 		// The five bits in "command" (from LSB to MSB):
 		// 1 = ACK, "Please respond to this packet" (using the remotePacketID). Exception: The initial 10-20 kbytes of Switcher status
-		// 2 = Initialization (first hand-shake packets contains that)
+		// 2 = ?. Set during initialization? (first hand-shake packets contains that)
 		// 3 = "This is a retransmission". You will see this bit set if the ATEM switcher did not get a timely response to a packet.
+		// 4 = ? ("hello packet" according to "ratte", forum at atemuser.com)
 		// 5 = "This is a response on your request". So set this when answering...
 
     if (packetSize==packetLength) {  // Just to make sure these are equal, they should be!
@@ -130,18 +133,21 @@ void ATEM::runLoop() {
 
       // If we are initialized, lets answer back no matter what:
       if (_hasInitialized && command_ACK) {
-        Serial.print("ACK, rpID: ");
-        Serial.println(remotePacketID, DEC);
+        if (_serialOutput) {
+			Serial.print("ACK, rpID: ");
+        	Serial.println(remotePacketID, DEC);
+		}
 
         _sendAnswerPacket(remotePacketID);
       }
 
     } else {
-      Serial.print("ERROR: Packet size mismatch: ");
-      Serial.print(packetSize, DEC);
-      Serial.print(" != ");
-      Serial.println(packetLength, DEC);
-
+		if (_serialOutput) 	{
+      		Serial.print("ERROR: Packet size mismatch: ");
+		    Serial.print(packetSize, DEC);
+		    Serial.print(" != ");
+		    Serial.println(packetLength, DEC);
+		}
 		// Flushing the buffer:
 		// TODO: Other way? _Udp.flush() ??
           while(_Udp.available()) {
@@ -151,6 +157,9 @@ void ATEM::runLoop() {
   }
 }
 
+void ATEM::serialOutput(boolean serialOutput) {
+	_serialOutput = serialOutput;
+}
 
 void ATEM::_parsePacket(uint16_t packetLength)	{
      
@@ -174,20 +183,20 @@ void ATEM::_parsePacket(uint16_t packetLength)	{
           // Extract the specific information we like to know about in this implementation:
           if(strcmp(cmdStr, "PrgI") == 0) {  // Program Bus status
 			_ATEM_PrgI = _packetBuffer[-2+8+1];
-            Serial.print("Program Bus: ");
-            Serial.println(_packetBuffer[-2+8+1], DEC);
+            if (_serialOutput) Serial.print("Program Bus: ");
+            if (_serialOutput) Serial.println(_packetBuffer[-2+8+1], DEC);
           }
           if(strcmp(cmdStr, "PrvI") == 0) {  // Preview Bus status
 			_ATEM_PrvI = _packetBuffer[-2+8+1];
-            Serial.print("Preview Bus: ");
-            Serial.println(_packetBuffer[-2+8+1], DEC);
+            if (_serialOutput) Serial.print("Preview Bus: ");
+            if (_serialOutput) Serial.println(_packetBuffer[-2+8+1], DEC);
           }
 
           indexPointer+=cmdLength;
         } else { 
           // Error, just get out of the loop ASAP:
-          Serial.print("ERROR: Command Size mismatch: ");
-          Serial.print(cmdLength, DEC);
+          if (_serialOutput) Serial.print("ERROR: Command Size mismatch: ");
+          if (_serialOutput) Serial.print(cmdLength, DEC);
           indexPointer = 2000;
           
 			// Flushing the buffer:

@@ -18,6 +18,12 @@ with the ATEM library. If not, see http://www.gnu.org/licenses/.
 
 */
 
+
+/**
+  Version 1 beta
+**/
+
+
 #ifndef ATEM_h
 #define ATEM_h
 
@@ -37,6 +43,7 @@ class ATEM
 	EthernetUDP _Udp;	// Udp Object for communication, see constructor.
 	uint16_t _localPort; // local port to send from
 	IPAddress _switcherIP;	// IP address of the switcher
+	boolean _serialOutput;
 
 	uint8_t _sessionID;		// Used internally for storing packet size during communication
 	char _packetBuffer[96];   // Buffer for storing segments of the packets from ATEM. Has the size of the largest known "segment" of a packet the ATEM sends.
@@ -53,6 +60,8 @@ class ATEM
     ATEM(IPAddress ip, uint16_t localPort);
     void connect();
     void runLoop();
+  	void serialOutput(boolean serialOutput);
+
 
   private:
 	void _sendAnswerPacket(uint16_t remotePacketID);
