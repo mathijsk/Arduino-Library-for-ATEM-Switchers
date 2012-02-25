@@ -26,6 +26,10 @@ with the ATEM library. If not, see http://www.gnu.org/licenses/.
 
 #include "ATEM.h"
 
+
+/**
+ * Constructor, setting up IP address for the switcher (and local port to send packets from)
+ */
 ATEM::ATEM(IPAddress ip, uint16_t localPort){
 		// Set up Udp communication object:
 	EthernetUDP Udp;
@@ -37,6 +41,9 @@ ATEM::ATEM(IPAddress ip, uint16_t localPort){
 	_serialOutput = false;
 }
 
+/**
+ * Initiating connection handshake to the ATEM switcher
+ */
 void ATEM::connect() {
 
 	_localPacketIdCounter = 1;	// Init localPacketIDCounter to 1;
@@ -73,6 +80,7 @@ void ATEM::connect() {
 
 	// Send connectAnswerString to ATEM:
 	_Udp.beginPacket(_switcherIP,  9910);
+	
 	// TODO: Describe packet contents according to rev.eng. API
 	byte connectHelloAnswerString[] = {  
 	  0x80, 0x0c, 0x53, 0xab, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00 };
@@ -80,6 +88,11 @@ void ATEM::connect() {
 	_Udp.endPacket();
 }
 
+/**
+ * Keeps connection to the switcher alive - basically, this means answering back to ping packages.
+ * Therefore: Call this in the Arduino loop() function and make sure it gets call at least 2 times a second
+ * Other recommendations might come up in the future.
+ */
 void ATEM::runLoop() {
 
   // WARNING:
@@ -108,11 +121,11 @@ void ATEM::runLoop() {
 
     // Read out packet length (first word), remote packet ID number and "command":
     uint16_t packetLength = word(_packetBuffer[0] & B00000111, _packetBuffer[1]);
-    uint16_t remotePacketID = word(_packetBuffer[10],_packetBuffer[11]);
+    _lastRemotePacketID = word(_packetBuffer[10],_packetBuffer[11]);
     uint8_t command = _packetBuffer[0] & B11111000;
     boolean command_ACK = command & B00001000 ? true : false;	// If true, ATEM expects an acknowledgement answer back!
 		// The five bits in "command" (from LSB to MSB):
-		// 1 = ACK, "Please respond to this packet" (using the remotePacketID). Exception: The initial 10-20 kbytes of Switcher status
+		// 1 = ACK, "Please respond to this packet" (using the _lastRemotePacketID). Exception: The initial 10-20 kbytes of Switcher status
 		// 2 = ?. Set during initialization? (first hand-shake packets contains that)
 		// 3 = "This is a retransmission". You will see this bit set if the ATEM switcher did not get a timely response to a packet.
 		// 4 = ? ("hello packet" according to "ratte", forum at atemuser.com)
@@ -125,6 +138,7 @@ void ATEM::runLoop() {
 	  // Currently we don't know any other way to decide if an answer should be sent back...
       if(!_hasInitialized && packetSize == 12) {
         _hasInitialized = true;
+		if (_serialOutput) Serial.println("_hasInitialized=TRUE");
       } 
 	
 		if (packetLength > 12)	{
@@ -132,13 +146,19 @@ void ATEM::runLoop() {
 		}
 
       // If we are initialized, lets answer back no matter what:
-      if (_hasInitialized && command_ACK) {
+		// TODO: "_hasInitialized && " should be inserted back before "command_ACK" but 
+		// with Arduino 1.0 UDP library it has proven MORE likely that the initial
+		// connection is made if we ALWAYS answer the switcher back.
+		// Apparently the initial "chaos" of keeping up with the incoming data confuses 
+		// the UDP library so that we might never get initialized - and thus never get connected
+		// So... for now this is how we do it:
+      if (command_ACK) {
         if (_serialOutput) {
 			Serial.print("ACK, rpID: ");
-        	Serial.println(remotePacketID, DEC);
+        	Serial.println(_lastRemotePacketID, DEC);
 		}
 
-        _sendAnswerPacket(remotePacketID);
+        _sendAnswerPacket(_lastRemotePacketID);
       }
 
     } else {
@@ -157,12 +177,14 @@ void ATEM::runLoop() {
   }
 }
 
-void ATEM::serialOutput(boolean serialOutput) {
-	_serialOutput = serialOutput;
-}
-
+/**
+ * If a package longer than a normal acknowledgement is received from the ATEM Switcher we must read through the contents.
+ * Usually such a package contains updated state information about the mixer
+ * Selected information is extracted in this function and transferred to internal variables in this library.
+ */
 void ATEM::_parsePacket(uint16_t packetLength)	{
-     
+		uint8_t idx;	// General reusable index usable for keyers, mediaplayer etc below.
+	
  		// If packet is more than an ACK packet (= if its longer than 12 bytes header), lets parse it:
       uint16_t indexPointer = 12;
       while (indexPointer < packetLength)  {
@@ -180,17 +202,117 @@ void ATEM::_parsePacket(uint16_t packetLength)	{
           char cmdStr[] = { 
             _packetBuffer[-2+4], _packetBuffer[-2+5], _packetBuffer[-2+6], _packetBuffer[-2+7], '\0'                                                  };
 
-          // Extract the specific information we like to know about in this implementation:
+          // Extract the specific state information we like to know about:
           if(strcmp(cmdStr, "PrgI") == 0) {  // Program Bus status
 			_ATEM_PrgI = _packetBuffer[-2+8+1];
             if (_serialOutput) Serial.print("Program Bus: ");
-            if (_serialOutput) Serial.println(_packetBuffer[-2+8+1], DEC);
-          }
+            if (_serialOutput) Serial.println(_ATEM_PrgI, DEC);
+          } else
           if(strcmp(cmdStr, "PrvI") == 0) {  // Preview Bus status
 			_ATEM_PrvI = _packetBuffer[-2+8+1];
             if (_serialOutput) Serial.print("Preview Bus: ");
             if (_serialOutput) Serial.println(_packetBuffer[-2+8+1], DEC);
-          }
+          } else
+          if(strcmp(cmdStr, "TlIn") == 0) {  // Tally status for inputs 1-8
+			 // Inputs 1-8, bit 0 = Prg tally, bit 1 = Prv tally. Both can be set simultaneously.
+			_ATEM_TlIn[0] = _packetBuffer[-2+8+2];
+			_ATEM_TlIn[1] = _packetBuffer[-2+8+3];
+			_ATEM_TlIn[2] = _packetBuffer[-2+8+4];
+			_ATEM_TlIn[3] = _packetBuffer[-2+8+5];
+			_ATEM_TlIn[4] = _packetBuffer[-2+8+6];
+			_ATEM_TlIn[5] = _packetBuffer[-2+8+7];
+			_ATEM_TlIn[6] = _packetBuffer[-2+8+8];
+			_ATEM_TlIn[7] = _packetBuffer[-2+8+9];
+
+            if (_serialOutput) Serial.println("Tally updated: ");
+          } else 
+          if(strcmp(cmdStr, "Time") == 0) {  // Time. What is this anyway?
+	      } else 
+	      if(strcmp(cmdStr, "TrPr") == 0) {  // Transition Preview
+			_ATEM_TrPr = _packetBuffer[-2+8+1] > 0 ? true : false;
+            if (_serialOutput) Serial.print("Transition Preview: ");
+            if (_serialOutput) Serial.println(_ATEM_TrPr, BIN);
+          } else
+	      if(strcmp(cmdStr, "TrPs") == 0) {  // Transition Position
+			_ATEM_TrPs_frameCount = _packetBuffer[-2+8+2];	// Frames count down
+			_ATEM_TrPs_position = _packetBuffer[-2+8+4]*256 + _packetBuffer[-2+8+5];	// Position 0-1000
+          } else
+	      if(strcmp(cmdStr, "TrSS") == 0) {  // Transition Style and Keyer on next transition
+			_ATEM_TrSS_KeyersOnNextTransition = _packetBuffer[-2+8+2] & B11111;	// Bit 0: Background; Bit 1-4: Key 1-4
+            if (_serialOutput) Serial.print("Keyers on Next Transition: ");
+            if (_serialOutput) Serial.println(_ATEM_TrSS_KeyersOnNextTransition, BIN);
+
+			_ATEM_TrSS_TransitionStyle = _packetBuffer[-2+8+1];
+            if (_serialOutput) Serial.print("Transition Style: ");	// 0=MIX, 1=DIP, 2=WIPE, 3=DVE, 4=STING
+            if (_serialOutput) Serial.println(_ATEM_TrSS_TransitionStyle, DEC);
+          } else
+	      if(strcmp(cmdStr, "FtbS") == 0) {  // Fade To Black State
+			_ATEM_FtbS_frameCount = _packetBuffer[-2+8+2];	// Frames count down
+          } else
+	      if(strcmp(cmdStr, "DskS") == 0) {  // Downstream Keyer state. Also contains information about the frame count in case of "Auto"
+			idx = _packetBuffer[-2+8+0];
+			if (idx >=0 && idx <=1)	{
+				_ATEM_DskOn[idx] = _packetBuffer[-2+8+1] > 0 ? true : false;
+	            if (_serialOutput) Serial.print("Dsk Keyer ");
+	            if (_serialOutput) Serial.print(idx+1);
+	            if (_serialOutput) Serial.print(": ");
+	            if (_serialOutput) Serial.println(_ATEM_DskOn[idx], BIN);
+			}
+          } else
+	      if(strcmp(cmdStr, "DskP") == 0) {  // Downstream Keyer Tie
+			idx = _packetBuffer[-2+8+0];
+			if (idx >=0 && idx <=1)	{
+				_ATEM_DskTie[idx] = _packetBuffer[-2+8+1] > 0 ? true : false;
+	            if (_serialOutput) Serial.print("Dsk Keyer");
+	            if (_serialOutput) Serial.print(idx+1);
+	            if (_serialOutput) Serial.print(" Tie: ");
+	            if (_serialOutput) Serial.println(_ATEM_DskTie[idx], BIN);
+			}
+          } else
+		  if(strcmp(cmdStr, "KeOn") == 0) {  // Upstead Keyer on
+				idx = _packetBuffer[-2+8+1];
+				if (idx >=0 && idx <=3)	{
+					_ATEM_KeOn[idx] = _packetBuffer[-2+8+2] > 0 ? true : false;
+		            if (_serialOutput) Serial.print("Upstream Keyer ");
+		            if (_serialOutput) Serial.print(idx+1);
+		            if (_serialOutput) Serial.print(": ");
+		            if (_serialOutput) Serial.println(_ATEM_KeOn[idx], BIN);
+				}
+		    } else 
+		  if(strcmp(cmdStr, "ColV") == 0) {  // Color Generator Change
+				// Todo: Relatively easy: 8 bytes, first is the color generator, the last 6 is hsl words
+		    } else 
+		  if(strcmp(cmdStr, "MPCE") == 0) {  // Media Player Clip Enable
+				idx = _packetBuffer[-2+8+0];
+				if (idx >=0 && idx <=1)	{
+					_ATEM_MPType[idx] = _packetBuffer[-2+8+1];
+					_ATEM_MPStill[idx] = _packetBuffer[-2+8+2];
+					_ATEM_MPClip[idx] = _packetBuffer[-2+8+3];
+				}
+		    } else 
+		  if(strcmp(cmdStr, "AuxS") == 0) {  // Aux Output Source
+				uint8_t auxInput = _packetBuffer[-2+8+0];
+				if (auxInput >=0 && auxInput <=2)	{
+					_ATEM_AuxS[auxInput] = _packetBuffer[-2+8+1];
+		            if (_serialOutput) Serial.print("Aux ");
+		            if (_serialOutput) Serial.print(auxInput+1);
+		            if (_serialOutput) Serial.print(" Output: ");
+		            if (_serialOutput) Serial.println(_ATEM_AuxS[auxInput], DEC);
+				}
+
+		    } else 
+			if (_hasInitialized){	// All the rest...
+	            if (_serialOutput) {
+					Serial.print("???? Unknown token: ");
+					Serial.print(cmdStr);
+					Serial.print(" : ");
+				}
+				for(uint8_t a=(-2+8);a<cmdLength-2;a++)	{
+	            	if (_serialOutput) Serial.print((uint8_t)_packetBuffer[a], HEX);
+	            	if (_serialOutput) Serial.print(" ");
+				}
+				if (_serialOutput) Serial.println("");
+	          }
 
           indexPointer+=cmdLength;
         } else { 
@@ -208,7 +330,9 @@ void ATEM::_parsePacket(uint16_t packetLength)	{
       }
 }
 
-
+/**
+ * Sending a regular answer packet back (tell the switcher that "we heard you, thanks.")
+ */
 void ATEM::_sendAnswerPacket(uint16_t remotePacketID)  {
 
   //Answer packet:
@@ -232,11 +356,14 @@ void ATEM::_sendAnswerPacket(uint16_t remotePacketID)  {
   _Udp.endPacket();  
 }
 
+/**
+ * Sending a command packet back (ask the switcher to do something)
+ */
 void ATEM::_sendCommandPacket(char cmd[4], uint8_t commandBytes[16], uint8_t cmdBytes)  {
 
-  if (cmdBytes <= 4)	{	// Currently, only a lenght of 4 - can be extended, but then the _answer buffer must be prolonged as well (to more than 24)
+  if (cmdBytes <= 16)	{	// Currently, only a lenght up to 16 - can be extended, but then the _answer buffer must be prolonged as well (to more than 36)
 	  //Answer packet preparations:
-	  memset(_answer, 0, 24);
+	  memset(_answer, 0, 36);
 	  _answer[2] = 0x80;  // ??? API
 	  _answer[3] = _sessionID;  // Session ID
 	  _answer[10] = _localPacketIdCounter/256;  // Remote Packet ID, MSB
@@ -279,31 +406,213 @@ void ATEM::_sendCommandPacket(char cmd[4], uint8_t commandBytes[16], uint8_t cmd
 
 
 
+/********************************
+ *
+ * General Getter/Setter methods
+ *
+ ********************************/
 
 
-uint8_t ATEM::getATEM_PrgI() {
+/**
+ * Setter method: If _serialOutput is set, the library may use Serial.print() to give away information about its operation - mostly for debugging.
+ */
+void ATEM::serialOutput(boolean serialOutput) {
+	_serialOutput = serialOutput;
+}
+
+/**
+ * Getter method: If true, the initial handshake and "stressful" information exchange has occured and now the switcher connection should be ready for operation. 
+ */
+bool ATEM::hasInitialized()	{
+	return _hasInitialized;
+}
+
+/**
+ * Returns last Remote Packet ID
+ */
+uint16_t ATEM::getATEM_lastRemotePacketId()	{
+	return _lastRemotePacketID;
+}
+
+
+
+
+
+
+
+
+/********************************
+ *
+ * ATEM Switcher state methods
+ * Returns the most recent information we've 
+ * got about the switchers state
+ *
+ ********************************/
+
+uint8_t ATEM::getProgramInput() {
 	return _ATEM_PrgI;
 }
-void ATEM::setATEM_PrgI(uint8_t inputNumber)  {
+uint8_t ATEM::getPreviewInput() {
+	return _ATEM_PrvI;
+}
+boolean ATEM::getProgramTally(uint8_t inputNumber) {
+  	// TODO: Validate that input number exists on current model! <8 at the moment.
+	return (_ATEM_TlIn[inputNumber-1] & 1) >0 ? true : false;
+}
+boolean ATEM::getPreviewTally(uint8_t inputNumber) {
+  	// TODO: Validate that input number exists on current model! 1-8 at the moment.
+	return (_ATEM_TlIn[inputNumber-1] & 2) >0 ? true : false;
+}
+
+
+
+
+
+
+/********************************
+ *
+ * ATEM Switcher Change methods
+ * Asks the switcher to changes something
+ *
+ ********************************/
+
+
+
+void ATEM::changeProgramInput(uint8_t inputNumber)  {
   // TODO: Validate that input number exists on current model!
 	// On ATEM 1M/E: Black (0), 1 (1), 2 (2), 3 (3), 4 (4), 5 (5), 6 (6), 7 (7), 8 (8), Bars (9), Color1 (10), Color 2 (11), Media 1 (12), Media 2 (14)
 
   uint8_t commandBytes[4] = {0, inputNumber, 0, 0};
   _sendCommandPacket("CPgI", commandBytes, 4);
 }
-
-
-uint8_t ATEM::getATEM_PrvI() {
-	return _ATEM_PrvI;
-}
-void ATEM::setATEM_PrvI(uint8_t inputNumber)  {
+void ATEM::changePreviewInput(uint8_t inputNumber)  {
   // TODO: Validate that input number exists on current model!
 
   uint8_t commandBytes[4] = {0, inputNumber, 0, 0};
   _sendCommandPacket("CPvI", commandBytes, 4);
 }
-
-void ATEM::send_cut()	{
+void ATEM::doCut()	{
   uint8_t commandBytes[4] = {0, 0xef, 0xbf, 0x5f};	// I don't know what that actually means...
   _sendCommandPacket("DCut", commandBytes, 4);
+}
+void ATEM::doAuto()	{
+  uint8_t commandBytes[4] = {0, 0x32, 0x16, 0x02};	// I don't know what that actually means...
+  _sendCommandPacket("DAut", commandBytes, 4);
+}
+void ATEM::fadeToBlackActivate()	{
+	uint8_t commandBytes[4] = {0x00, 0x02, 0x58, 0x99};
+	_sendCommandPacket("FtbA", commandBytes, 4);	// Reflected back from ATEM in "FtbS"
+}
+void ATEM::changeTransitionPosition(word value)	{
+	if (value>0 && value<=1000)	{
+		uint8_t commandBytes[4] = {0, 0xe4, value/256, value%256};
+		_sendCommandPacket("CTPs", commandBytes, 4);  // Change Transition Position (CTPs)
+	}
+}
+void ATEM::changeTransitionPositionDone()	{	// When the last value of the transition is sent (1000), send this one too (we are done, change tally lights and preview bus!)
+	uint8_t commandBytes[4] = {0, 0xf6, 0, 0};  	// Done
+	_sendCommandPacket("CTPs", commandBytes, 4);  // Change Transition Position (CTPs)
+}
+void ATEM::changeTransitionPreview(bool state)	{
+	uint8_t commandBytes[4] = {0x00, state ? 0x01 : 0x00, 0x00, 0x00};
+	_sendCommandPacket("CTPr", commandBytes, 4);	// Reflected back from ATEM in "TrPr"
+}
+void ATEM::changeTransitionType(uint8_t type)	{
+	if (type>=0 && type<=4)	{	// 0=MIX, 1=DIP, 2=WIPE, 3=DVE, 4=STING
+		uint8_t commandBytes[4] = {0x01, 0x00, type, 0x02};
+		_sendCommandPacket("CTTp", commandBytes, 4);	// Reflected back from ATEM in "TrSS"
+	}
+}
+void ATEM::changeUpstreamKeyOn(uint8_t keyer, bool state)	{
+	if (keyer>=1 && keyer<=4)	{	// Todo: Should match available keyers depending on model?
+		uint8_t commandBytes[4] = {0x00, keyer-1, state ? 0x01 : 0x00, 0x90};
+		_sendCommandPacket("CKOn", commandBytes, 4);	// Reflected back from ATEM in "KeOn"
+	}
+}
+void ATEM::changeUpstreamKeyNextTransition(uint8_t keyer, bool state)	{	// Not supporting "Background"
+	if (keyer>=1 && keyer<=4)	{	// Todo: Should match available keyers depending on model?
+		uint8_t stateValue = _ATEM_TrSS_KeyersOnNextTransition;
+		if (state)	{
+			stateValue = stateValue | (B10 << (keyer-1));
+		} else {
+			stateValue = stateValue & (~(B10 << (keyer-1)));
+		}
+				// TODO: Requires internal storage of state here so we can preserve all other states when changing the one we want to change.
+		uint8_t commandBytes[4] = {0x02, 0x00, 0x6a, stateValue & B11111};
+		_sendCommandPacket("CTTp", commandBytes, 4);	// Reflected back from ATEM in "TrSS"
+	}
+}
+void ATEM::changeDownstreamKeyOn(uint8_t keyer, bool state)	{
+	if (keyer>=1 && keyer<=2)	{	// Todo: Should match available keyers depending on model?
+		uint8_t commandBytes[4] = {keyer-1, state ? 0x01 : 0x00, 0xff, 0xff};
+		_sendCommandPacket("CDsL", commandBytes, 4);	// Reflected back from ATEM in "DskP" and "DskS"
+	}
+}
+void ATEM::changeDownstreamKeyTie(uint8_t keyer, bool state)	{
+	if (keyer>=1 && keyer<=2)	{	// Todo: Should match available keyers depending on model?
+		uint8_t commandBytes[4] = {keyer-1, state ? 0x01 : 0x00, 0xff, 0xff};
+		_sendCommandPacket("CDsT", commandBytes, 4);
+	}
+}
+void ATEM::doAutoDownstreamKeyer(uint8_t keyer)	{
+	if (keyer>=1 && keyer<=2)	{	// Todo: Should match available keyers depending on model?
+  		uint8_t commandBytes[4] = {keyer-1, 0x32, 0x16, 0x02};	// I don't know what that actually means...
+  		_sendCommandPacket("DDsA", commandBytes, 4);
+	}
+}
+void ATEM::changeAuxState(uint8_t auxOutput, uint8_t inputNumber)  {
+  // TODO: Validate that input number exists on current model!
+	// On ATEM 1M/E: Black (0), 1 (1), 2 (2), 3 (3), 4 (4), 5 (5), 6 (6), 7 (7), 8 (8), Bars (9), Color1 (10), Color 2 (11), Media 1 (12), Media 1 Key (13), Media 2 (14), Media 2 Key (15), Program (16), Preview (17), Clean1 (18), Clean 2 (19)
+
+	if (auxOutput>=1 && auxOutput<=3)	{	// Todo: Should match available aux outputs
+  		uint8_t commandBytes[4] = {auxOutput-1, inputNumber, 0, 0};
+  		_sendCommandPacket("CAuS", commandBytes, 4);
+    }
+}
+void ATEM::settingsMemorySave()	{
+	uint8_t commandBytes[4] = {0, 0, 0, 0};
+	_sendCommandPacket("SRsv", commandBytes, 4);
+}
+void ATEM::settingsMemoryClear()	{
+	uint8_t commandBytes[4] = {0, 0, 0, 0};
+	_sendCommandPacket("SRcl", commandBytes, 4);
+}
+void ATEM::changeColorValue(uint8_t colorGenerator, uint16_t hue, uint16_t saturation, uint16_t lightness)  {
+	if (colorGenerator>=1 && colorGenerator<=2
+			&& hue>=0 && hue<=3600 
+			&& saturation >=0 && saturation <=1000 
+			&& lightness >=0 && lightness <= 1000
+		)	{	// Todo: Should match available aux outputs
+  		uint8_t commandBytes[8] = {0x07, colorGenerator-1, 
+			highByte(hue), lowByte(hue),
+			highByte(saturation), lowByte(saturation),
+			highByte(lightness), lowByte(lightness)
+							};
+  		_sendCommandPacket("CClV", commandBytes, 8);
+    }
+}
+void ATEM::mediaPlayerSelectSource(uint8_t mediaPlayer, boolean movieclip, uint8_t sourceIndex)  {
+	if (mediaPlayer>=1 && mediaPlayer<=2)	{	// TODO: Adjust to particular ATEM model... (here 1M/E)
+		uint8_t commandBytes[12];
+		memset(commandBytes, 0, 12);
+  		commandBytes[1] = mediaPlayer-1;
+		if (movieclip)	{
+			commandBytes[0] = 4;
+			if (sourceIndex>=1 && sourceIndex<=2)	{
+				commandBytes[4] = sourceIndex-1;
+			}
+		} else {
+			commandBytes[0] = 2;
+			if (sourceIndex>=1 && sourceIndex<=32)	{
+				commandBytes[3] = sourceIndex-1;
+			}
+		}
+		commandBytes[9] = 0x10;
+		_sendCommandPacket("MPSS", commandBytes, 12);
+			
+			// For some reason you have to send this command immediate after (or in fact it could be in the same packet)
+			// If not done, the clip will not change if there is a shift from stills to clips or vice versa.
+		uint8_t commandBytes2[8] = {0x01, mediaPlayer-1, movieclip?2:1, 0xbf, movieclip?0x96:0xd5, 0xb6, 0x04, 0};
+		_sendCommandPacket("MPSS", commandBytes2, 8);
+	}
 }

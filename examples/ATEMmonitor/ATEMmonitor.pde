@@ -62,6 +62,7 @@ void setup() {
   // Start the Ethernet, Serial (debugging) and UDP:
   Ethernet.begin(mac,ip);
   Serial.begin(9600);  
+  Serial.println("Serial started.");
 
   // Initialize a connection to the switcher:
   AtemSwitcher.serialOutput(true);

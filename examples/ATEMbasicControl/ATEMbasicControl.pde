@@ -89,15 +89,15 @@ void loop() {
 
 
     // Write the Tally LEDS:
-  digitalWrite(4, !(AtemSwitcher.getATEM_PrgI()==1));
-  digitalWrite(5, !(AtemSwitcher.getATEM_PrgI()==2));
+  digitalWrite(4, !AtemSwitcher.getProgramTally(1));
+  digitalWrite(5, !AtemSwitcher.getProgramTally(2));
 
 
   if (digitalRead(2))  {
     if (pushButton !=2)  {
       pushButton=2;
       Serial.println("Select 1");
-      AtemSwitcher.setATEM_PrvI(1);
+      AtemSwitcher.changePreviewInput(1);
     }
   } else if (pushButton==2) {
     pushButton = 0; 
@@ -106,7 +106,7 @@ void loop() {
     if (pushButton !=3)  {
       pushButton=3;
       Serial.println("Select 2");
-      AtemSwitcher.setATEM_PrvI(2);
+      AtemSwitcher.changePreviewInput(2);
     }
   } else if (pushButton==3) {
     pushButton = 0; 
@@ -115,7 +115,7 @@ void loop() {
     if (pushButton !=7)  {
       pushButton=7;
       Serial.println("Cut");
-      AtemSwitcher.send_cut();
+      AtemSwitcher.doCut();
     }
   } else if (pushButton==7) {
     pushButton = 0; 

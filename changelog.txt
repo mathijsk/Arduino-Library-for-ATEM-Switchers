@@ -1,0 +1,7 @@
+
+23/2 Changes (By Kasper Skårhøj)
+	* Implemented all basic features found in the switcher interface.
+	* Implemented a few of the "palette" features, such as setting the color generators and selecting media for the media banks.
+	* Cleaned up method names in the library - you WILL need to change those names if you used the first beta version of the library
+	* There are now separate functions for Program and Preview tally - they should reflect how inputs are used in keyers and during transitions.
+	
